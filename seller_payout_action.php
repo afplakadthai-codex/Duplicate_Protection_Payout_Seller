@@ -67,7 +67,9 @@ switch ($action) {
         }
         try {
             $ok = bv_seller_balance_approve_payout($payoutId, $adminId, $note);
-            if ($ok) {
+            if (is_array($ok) && !empty($ok['already_processed'])) {
+                bv_sb_flash_set('error', 'This payout has already been processed.');
+            } elseif ($ok) {
                 bv_sb_flash_set('success', 'Payout #' . $payoutId . ' approved.');
             } else {
                 bv_sb_flash_set('error', 'Could not approve payout #' . $payoutId . '. It may already be processed or not exist.');
@@ -107,7 +109,9 @@ switch ($action) {
         }
         try {
             $ok = bv_seller_balance_cancel_payout($payoutId, $adminId, $note ?: 'Cancelled by admin');
-            if ($ok) {
+            if (is_array($ok) && !empty($ok['already_processed'])) {
+                bv_sb_flash_set('error', 'This payout has already been processed.');
+            } elseif ($ok) {
                 bv_sb_flash_set('success', 'Payout #' . $payoutId . ' cancelled. Funds returned to seller available balance.');
             } else {
                 bv_sb_flash_set('error', 'Could not cancel payout #' . $payoutId . '. Check status.');
@@ -150,7 +154,9 @@ switch ($action) {
                 $paymentMethod,
                 $note
             );
-            if ($ok) {
+           if (is_array($ok) && !empty($ok['already_processed'])) {
+                bv_sb_flash_set('error', 'This payout has already been processed.');
+            } elseif ($ok) {
                 bv_sb_flash_set('success',
                     'Payout #' . $payoutId . ' marked as PAID. Ref: ' . $paymentRef
                 );

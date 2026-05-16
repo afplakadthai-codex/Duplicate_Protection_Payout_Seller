@@ -514,6 +514,7 @@ $prHasStatus       = !empty($prMap['status']);
 
 $hasApprove        = $sbAvailable && $hasPayoutsTable && $prHasRequestId && $prHasStatus && function_exists('bv_seller_balance_approve_payout');
 $hasReject         = $sbAvailable && $hasPayoutsTable && $prHasRequestId && $prHasStatus && function_exists('bv_seller_balance_reject_payout');
+$hasCancel         = $sbAvailable && $hasPayoutsTable && $prHasRequestId && $prHasStatus && function_exists('bv_seller_balance_cancel_payout');
 $hasMarkPaid       = $sbAvailable && $hasPayoutsTable && $prHasRequestId && $prHasStatus && $isSuperAdmin && function_exists('bv_seller_balance_mark_payout_paid');
 $hasReleasePending = $sbAvailable && $isSuperAdmin && function_exists('bv_seller_balance_release_pending') && function_exists('bv_seller_balance_get');
 $hasAdjustBalance  = $sbAvailable && $isSuperAdmin && function_exists('bv_seller_balance_admin_adjust');
@@ -541,11 +542,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             );
             if (!$req) { throw new RuntimeException('Payout request #' . $requestId . ' not found.'); }
             $cs = strtolower((string)($req['status'] ?? ''));
-            if (!in_array($cs, ['pending', 'requested'], true)) {
-                flash_set('error', 'Payout #' . $requestId . ' is already ' . $cs . '. No action taken.');
+             if (!in_array($cs, ['pending', 'requested'], true)) {
+                flash_set('error', 'This payout has already been processed.');
                 redirect_safe();
             }
             $result = bv_seller_balance_approve_payout($requestId, $adminId);
+            if (is_array($result) && !empty($result['already_processed'])) {
+                flash_set('error', 'This payout has already been processed.');
+                redirect_safe();
+            }
             if ($result === false) { throw new RuntimeException('Approve returned false for request #' . $requestId . '.'); }
             flash_set('message', 'Payout request #' . $requestId . ' approved.');
 
@@ -571,6 +576,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $result = bv_seller_balance_reject_payout($requestId, $adminId, $adminNote);
             if ($result === false) { throw new RuntimeException('Reject returned false for request #' . $requestId . '.'); }
             flash_set('message', 'Payout request #' . $requestId . ' rejected.');
+			
+       } elseif ($action === 'cancel_request') {
+            if (!$hasCancel) { throw new RuntimeException('bv_seller_balance_cancel_payout() is unavailable.'); }
+            $requestId = (int)($_POST['request_id'] ?? 0);
+            $adminNote = trim((string)($_POST['admin_note'] ?? 'Cancelled by admin'));
+            if ($requestId <= 0) { throw new RuntimeException('Invalid request ID.'); }
+            $reqIdCol = (string)($prMap['id'] ?? '');
+            $reqStatusCol = (string)($prMap['status'] ?? '');
+            if ($reqIdCol === '' || $reqStatusCol === '') { throw new RuntimeException('Payout request ID/status columns are unavailable.'); }
+            $req = bv_sp_q1(
+                'SELECT ' . bv_sp_ident($reqIdCol) . ' AS id, ' . bv_sp_ident($reqStatusCol) . ' AS status FROM seller_payout_requests WHERE ' . bv_sp_ident($reqIdCol) . ' = ? LIMIT 1',
+                [$requestId]
+            );
+            if (!$req) { throw new RuntimeException('Payout request #' . $requestId . ' not found.'); }
+            $cs = strtolower((string)($req['status'] ?? ''));
+            if (!in_array($cs, ['pending', 'requested', 'approved'], true)) {
+                flash_set('error', 'This payout has already been processed.');
+                redirect_safe();
+            }
+            $result = bv_seller_balance_cancel_payout($requestId, $adminId, $adminNote !== '' ? $adminNote : 'Cancelled by admin');
+            if (is_array($result) && !empty($result['already_processed'])) {
+                flash_set('error', 'This payout has already been processed.');
+                redirect_safe();
+            }
+            if ($result === false) { throw new RuntimeException('Cancel returned false for request #' . $requestId . '.'); }
+            flash_set('message', 'Payout request #' . $requestId . ' cancelled.');			
 
         } elseif ($action === 'mark_paid') {
             if (!bv_sp_is_super()) { throw new RuntimeException('Only superadmin/owner users can mark payouts as paid.'); }
@@ -590,14 +621,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ); 
             if (!$req) { throw new RuntimeException('Payout request #' . $requestId . ' not found.'); }
             $cs = strtolower((string)($req['status'] ?? ''));
-            if ($cs === 'paid') {
-                flash_set('error', 'Payout #' . $requestId . ' is already paid. No action taken.');
+             if (in_array($cs, ['paid', 'cancelled', 'canceled', 'rejected', 'failed'], true)) {
+                flash_set('error', 'This payout has already been processed.');
                 redirect_safe();
             }
             if ($cs !== 'approved') {
                 throw new RuntimeException('Payout #' . $requestId . ' must be approved before marking paid (current: ' . $cs . ').');
             }
             $result = bv_seller_balance_mark_payout_paid($requestId, $adminId, $paymentReference, $paymentMethod, $adminNote);
+            if (is_array($result) && !empty($result['already_processed'])) {
+                flash_set('error', 'This payout has already been processed.');
+                redirect_safe();
+            }			
             if ($result === false) { throw new RuntimeException('mark_payout_paid() returned false for request #' . $requestId . '.'); }
             flash_set('message', 'Payout #' . $requestId . ' marked as paid (ref: ' . $paymentReference . ').');
 
@@ -1082,6 +1117,17 @@ details summary{cursor:pointer;font-weight:600;font-size:13px;color:var(--accent
                     <button type="submit" class="btn b-ok">Approve</button>
                 </form>
                 <?php else: ?><button class="btn b-ok" disabled title="Helper missing">Approve</button><?php endif; ?>
+                <?php if ($hasCancel): ?>
+                <form method="post" action="seller_payouts.php" onsubmit="return confirm('Cancel payout #<?php echo (int)$_rid; ?>?');">
+                    <input type="hidden" name="csrf_token"  value="<?php echo h($_csrfToken); ?>">
+                    <input type="hidden" name="action"      value="cancel_request">
+                    <input type="hidden" name="request_id"  value="<?php echo h($_rid); ?>">
+                    <span class="ig">
+                        <input type="text" name="admin_note" placeholder="Cancel note (optional)" maxlength="255">
+                        <button type="submit" class="btn b-ng">Cancel</button>
+                    </span>
+                </form>
+                <?php else: ?><button class="btn b-ng" disabled title="Helper missing">Cancel</button><?php endif; ?>				
                 <?php if ($hasReject): ?>
                 <form method="post" action="seller_payouts.php" onsubmit="return confirm('Reject payout #<?php echo (int)$_rid; ?>?');">
                     <input type="hidden" name="csrf_token"  value="<?php echo h($_csrfToken); ?>">
@@ -1114,6 +1160,17 @@ details summary{cursor:pointer;font-weight:600;font-size:13px;color:var(--accent
                 </form>
                 <span class="badge <?php echo h(status_badge_class($_st)); ?>"><?php echo h($_st); ?></span>
                 <?php else: ?><button class="btn b-pay" disabled title="Helper missing">Mark Paid</button><?php endif; ?>
+                <?php if ($hasCancel): ?>
+                <form method="post" action="seller_payouts.php" onsubmit="return confirm('Cancel approved payout #<?php echo (int)$_rid; ?>?');">
+                    <input type="hidden" name="csrf_token"  value="<?php echo h($_csrfToken); ?>">
+                    <input type="hidden" name="action"      value="cancel_request">
+                    <input type="hidden" name="request_id"  value="<?php echo h($_rid); ?>">
+                    <span class="ig">
+                        <input type="text" name="admin_note" placeholder="Cancel note (optional)" maxlength="255">
+                        <button type="submit" class="btn b-ng">Cancel</button>
+                    </span>
+                </form>
+                <?php else: ?><button class="btn b-ng" disabled title="Helper missing">Cancel</button><?php endif; ?>				
             <?php else: ?>
                 <span class="badge <?php echo h(status_badge_class($_st)); ?>"><?php echo h($_st ?: 'unknown'); ?></span>
             <?php endif; ?>
